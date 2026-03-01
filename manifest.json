@@ -2,7 +2,7 @@
 	"id": "alchemy-sync",
 	"name": "Alchemy Sync",
 	"version": "1.0.0",
-	"minAppVersion": "0.15.0",
+	"minAppVersion": "1.12.4",
 	"description": "Sync your vault with Alchemy RPG",
-	"isDesktopOnly": false
+	"isDesktopOnly": true
 }
