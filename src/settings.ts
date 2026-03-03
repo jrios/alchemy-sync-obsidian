@@ -7,6 +7,12 @@ import {
 } from "obsidian";
 import AlchemySyncPlugin from "./main";
 
+export enum BacklinkOption {
+  BUTTON = "BUTTON",
+  LINK = "LINK",
+  NONE = "NONE",
+}
+
 export interface AlchemySyncPluginSettings {
   token: string;
   targetFolder: string;
@@ -14,6 +20,7 @@ export interface AlchemySyncPluginSettings {
   noteNameCharacterReplacement: string;
   groupNotesInUniverseFolders: boolean;
   groupNotesInModuleFolders: boolean;
+  convertBacklinksToArticleTagType: BacklinkOption;
 }
 
 export const DEFAULT_SETTINGS: AlchemySyncPluginSettings = {
@@ -23,6 +30,7 @@ export const DEFAULT_SETTINGS: AlchemySyncPluginSettings = {
   noteNameCharacterReplacement: "_",
   groupNotesInUniverseFolders: true,
   groupNotesInModuleFolders: true,
+  convertBacklinksToArticleTagType: BacklinkOption.BUTTON,
 };
 
 export class AlchemySyncSettingTab extends PluginSettingTab {
@@ -113,6 +121,24 @@ export class AlchemySyncSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.groupNotesInModuleFolders)
           .onChange(async (value) => {
             this.plugin.settings.groupNotesInModuleFolders = value;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Article Links")
+      .setDesc(
+        "Convert Obsidian backlinks into this type of Alchemy link within an article",
+      )
+      .addDropdown((dd) =>
+        dd
+          .addOption(BacklinkOption.BUTTON, "Button")
+          .addOption(BacklinkOption.LINK, "Link")
+          .addOption(BacklinkOption.NONE, "None")
+          .setValue(this.plugin.settings.convertBacklinksToArticleTagType)
+          .onChange(async (s) => {
+            this.plugin.settings.convertBacklinksToArticleTagType =
+              s as BacklinkOption;
             await this.plugin.saveSettings();
           }),
       );

@@ -23,7 +23,9 @@ export class AlchemySyncer {
     this.alchemy = new AlchemyApiWrapper(alchemyAuthToken!);
 
     this.noteManager = new NoteManager(this.plugin, this.vault);
+  }
 
+  registerCommands() {
     this.plugin.addCommand({
       id: "sync-from-alchemy",
       name: "Sync Vault from Alchemy",
@@ -80,7 +82,12 @@ export class AlchemySyncer {
 
     const loadUniversesResult = await this.alchemy.loadAlchemyUniverses();
     if (Array.isArray(loadUniversesResult)) {
-      return await this.noteManager.syncNotesFromAlchemy(loadUniversesResult);
+      const syncNotesResult = await this.noteManager.syncNotesFromAlchemy(loadUniversesResult);
+      if (syncNotesResult !== null) {
+        return syncNotesResult;
+      }
+
+      return await this.noteManager.replaceAlchemyLinks();
     } else {
       return loadUniversesResult;
     }

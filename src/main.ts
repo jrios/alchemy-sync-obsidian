@@ -8,11 +8,11 @@ import { AlchemySyncer } from "./sync";
 
 export default class AlchemySyncPlugin extends Plugin {
   settings: AlchemySyncPluginSettings;
-  syncer: AlchemySyncer;
 
   async onload() {
     await this.loadSettings();
-    this.syncer = new AlchemySyncer(this, this.app.vault);
+    const syncer = new AlchemySyncer(this, this.app.vault);
+    syncer.registerCommands();
 
     // This adds a settings tab so the user can configure various aspects of the plugin
     this.addSettingTab(new AlchemySyncSettingTab(this.app, this));
@@ -23,7 +23,7 @@ export default class AlchemySyncPlugin extends Plugin {
     );
   }
 
-  onunload() {}
+  onunload() { }
 
   async loadSettings() {
     const loadedData =
