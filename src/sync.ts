@@ -1,13 +1,14 @@
 import AlchemySyncPlugin from "main";
 import { AlchemyApiWrapper } from "alchemy";
-import { Notice, Vault } from "obsidian";
+import { Notice, TFile, Vault } from "obsidian";
 import { NoteManager } from "notes";
 import { maybeCreateFolder } from "files";
+import { AlchemyArticle } from "types";
 
 export type AlchemySyncPluginError = {
   message: string;
   duration?: number;
-}
+};
 
 export class AlchemySyncer {
   private plugin: AlchemySyncPlugin;
@@ -27,7 +28,7 @@ export class AlchemySyncer {
 
   registerCommands() {
     this.plugin.addCommand({
-      id: "sync-from-alchemy",
+      id: "sync-vault-from-alchemy",
       name: "Sync Vault from Alchemy",
       callback: async () => {
         const result = await this.syncVaultFromAlchemy();
@@ -38,12 +39,44 @@ export class AlchemySyncer {
     });
 
     this.plugin.addCommand({
-      id: "sync-to-alchemy",
+      id: "sync-vault-to-alchemy",
       name: "Sync Vault to Alchemy",
       callback: async () => {
         const result = await this.syncVaultToAlchemy();
         if (result !== null) {
           new Notice(result.message, result.duration);
+        }
+      },
+    });
+
+    this.plugin.addCommand({
+      id: "sync-note-to-alchemy",
+      name: "Sync Note to Alchemy",
+      callback: async () => {
+        const activeFile = this.plugin.app.workspace.activeEditor?.file;
+        if (activeFile !== null) {
+          const result = await this.syncNoteToAlchemy(activeFile!);
+          if (result !== null) {
+            new Notice(result.message, result.duration);
+          } else {
+            new Notice(`Synced ${activeFile!.name} to Alchemy.`);
+          }
+        }
+      },
+    });
+
+    this.plugin.addCommand({
+      id: "sync-note-from-alchemy",
+      name: "Sync Note from Alchemy",
+      callback: async () => {
+        const activeFile = this.plugin.app.workspace.activeEditor?.file;
+        if (activeFile !== null) {
+          const result = await this.syncNoteFromAlchemy(activeFile!);
+          if (result !== null) {
+            new Notice(result.message, result.duration);
+          } else {
+            new Notice(`Synced ${activeFile!.name} from Alchemy.`);
+          }
         }
       },
     });
@@ -64,6 +97,17 @@ export class AlchemySyncer {
     }
   }
 
+  async syncNoteToAlchemy(note: TFile): Promise<AlchemySyncPluginError | null> {
+    const syncResult = this.ensureAbilityToSync();
+
+    if (syncResult !== null) {
+      return syncResult;
+    }
+
+    const syncableNotesResult = await this.noteManager.getSyncableNote(note);
+    return await this.alchemy.createOrUpdateArticles([syncableNotesResult]);
+  }
+
   async syncVaultFromAlchemy(): Promise<AlchemySyncPluginError | null> {
     const syncResult = this.ensureAbilityToSync();
 
@@ -74,23 +118,85 @@ export class AlchemySyncer {
     const root = this.vault.getRoot();
     if (this.plugin.settings.targetFolder === root.path) {
       return {
-        message: "Cannot use the vault's root path as the Alchemy folder"
-      }
+        message: "Cannot use the vault's root path as the Alchemy folder",
+      };
     }
 
     await maybeCreateFolder(this.vault, this.plugin.settings.targetFolder);
 
     const loadUniversesResult = await this.alchemy.loadAlchemyUniverses();
     if (Array.isArray(loadUniversesResult)) {
-      const syncNotesResult = await this.noteManager.syncNotesFromAlchemy(loadUniversesResult);
+      const syncNotesResult =
+        await this.noteManager.syncNotesFromAlchemy(loadUniversesResult);
       if (syncNotesResult !== null) {
         return syncNotesResult;
       }
 
-      return await this.noteManager.replaceAlchemyLinks();
+      await this.noteManager.replaceAlchemyLinksInFiles();
+      return null;
     } else {
       return loadUniversesResult;
     }
+  }
+
+  async syncNoteFromAlchemy(
+    file: TFile,
+  ): Promise<AlchemySyncPluginError | null> {
+    const syncResult = this.ensureAbilityToSync();
+
+    if (syncResult !== null) {
+      return syncResult;
+    }
+
+    const cachedFile = this.plugin.app.metadataCache.getFileCache(file);
+    if (cachedFile === null) {
+      return {
+        message: `Unable to get file cache for ${file.name}`,
+      };
+    }
+    const cachedFileFrontmatter = cachedFile.frontmatter;
+    if (!cachedFileFrontmatter) {
+      return {
+        message: "Cannot sync file with no Alchemy Article id",
+      };
+    }
+    if (!cachedFileFrontmatter.alchemyArticleId) {
+      return {
+        message: "Cannot sync file with no Alchemy Article id",
+      };
+    }
+
+    const note = await this.noteManager.getSyncableNote(file);
+    const articleResponse = await this.alchemy.loadArticle(
+      note.alchemyArticleId!,
+    );
+    if (articleResponse.hasOwnProperty("message")) {
+      return articleResponse as AlchemySyncPluginError;
+    }
+
+    const f = articleResponse as AlchemyArticle;
+    let body = (articleResponse as AlchemyArticle).body;
+
+    body = await this.noteManager.replaceAlchemyLinks(
+      body,
+      this.noteManager.markdownFiles(),
+    );
+
+    await this.vault.modify(file, body);
+
+    try {
+      await this.plugin.app.fileManager.processFrontMatter(
+        file,
+        (frontmatter) => {
+          Object.assign(frontmatter, cachedFileFrontmatter);
+        },
+      );
+    } catch (err) {
+      return {
+        message: `Failed to write frontmatter for note ${file.name}`,
+      };
+    }
+    return null;
   }
 
   ensureAbilityToSyncToAlchemy(
@@ -98,8 +204,8 @@ export class AlchemySyncer {
     alchemyModuleId: string,
     alchemyArticleId: string,
   ): AlchemySyncPluginError | null {
-    const hasAlchemyIdentifiers = (alchemyUniverseId !== "" &&
-      alchemyModuleId !== "") ||
+    const hasAlchemyIdentifiers =
+      (alchemyUniverseId !== "" && alchemyModuleId !== "") ||
       alchemyArticleId !== "";
 
     if (!hasAlchemyIdentifiers) {

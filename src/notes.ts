@@ -1,7 +1,7 @@
 import AlchemySyncPlugin from "main";
 import path from "path";
 import { getFrontMatterInfo, normalizePath, TFile, Vault } from "obsidian";
-import { AlchemyUniverse } from "types";
+import { AlchemyArticle, AlchemyUniverse } from "types";
 import { maybeCreateFolder } from "files";
 import { AlchemySyncPluginError } from "sync";
 import { BacklinkOption } from "settings";
@@ -19,6 +19,85 @@ export type SyncableNote = {
   body: string;
 };
 
+class SyncableNoteFactory {
+  private plugin: AlchemySyncPlugin;
+  private vault: Vault;
+
+  constructor(plugin: AlchemySyncPlugin, vault: Vault) {
+    this.plugin = plugin;
+    this.vault = vault;
+  }
+
+  async create(file: TFile, files: TFile[]): Promise<SyncableNote> {
+    const onArticleCreated = async (
+      articleId: string,
+    ): Promise<AlchemySyncPluginError | null> => {
+      try {
+        await this.plugin.app.fileManager.processFrontMatter(
+          file,
+          (frontmatter) => {
+            Object.assign(frontmatter, {
+              alchemyArticleId: articleId,
+            });
+          },
+        );
+        return null;
+      } catch (err) {
+        return {
+          message: `Failed to add article ID [${articleId}] to note [${file.basename}] frontmatter.`,
+          duration: 0,
+        };
+      }
+    };
+
+    const fileCache = this.plugin.app.metadataCache.getFileCache(file);
+
+    const contents = await this.vault.cachedRead(file);
+    const backlinks = fileCache?.links || [];
+
+    let body = contents;
+
+    for (const bl of backlinks) {
+      // Try to replace all links in the body with Alchemy-formed links/buttons if possible
+      // before sending the note to be synced.
+      const linkedFile = files.find((f) => f.name === `${bl.link}.md`);
+      const replacementType =
+        this.plugin.settings.convertBacklinksToArticleTagType;
+      if (linkedFile && replacementType !== BacklinkOption.NONE) {
+        const linkedFileFrontmatter =
+          this.plugin.app.metadataCache.getFileCache(linkedFile)?.frontmatter;
+
+        if (canReplaceLink(linkedFileFrontmatter)) {
+          const universeId = linkedFileFrontmatter!.alchemyUniverseId!;
+          const articleId = linkedFileFrontmatter!.alchemyArticleId;
+          const replacement =
+            replacementType === BacklinkOption.BUTTON
+              ? `![${linkedFile.basename}=type:article](${universeId}:${articleId})`
+              : `[${linkedFile.basename}](alchemy:article:${universeId}:${articleId})`;
+
+          body = body.replaceAll(bl.original, replacement);
+        }
+      }
+    }
+
+    const frontmatter = fileCache?.frontmatter;
+
+    const { contentStart } = getFrontMatterInfo(contents);
+    body = body.slice(contentStart);
+
+    const syncableNote: SyncableNote = {
+      alchemyUniverseId: frontmatter!.alchemyUniverseId,
+      alchemyModuleId: frontmatter!.alchemyModuleId,
+      alchemyArticleId: frontmatter!.alchemyArticleId,
+      title: file.basename,
+      body,
+      onArticleCreated,
+    };
+
+    return syncableNote;
+  }
+}
+
 export class NoteManager {
   private plugin: AlchemySyncPlugin;
   private vault: Vault;
@@ -31,112 +110,63 @@ export class NoteManager {
   async getSyncableNotes(): Promise<
     Array<SyncableNote> | AlchemySyncPluginError
   > {
+    const noteFactory = new SyncableNoteFactory(this.plugin, this.vault);
     const notes = [];
     const files = this.markdownFiles();
     for (const f of files) {
-      const onArticleCreated = async (
-        articleId: string,
-      ): Promise<AlchemySyncPluginError | null> => {
-        try {
-          await this.plugin.app.fileManager.processFrontMatter(
-            f,
-            (frontmatter) => {
-              Object.assign(frontmatter, {
-                alchemyArticleId: articleId,
-              });
-            },
-          );
-          return null;
-        } catch (err) {
-          return {
-            message: `Failed to add article ID [${articleId}] to note [${f.basename}] frontmatter.`,
-            duration: 0,
-          };
-        }
-      };
-
-      const fileCache = this.plugin.app.metadataCache.getFileCache(f);
-
-      const contents = await this.vault.cachedRead(f);
-      const backlinks = fileCache?.links || [];
-
-      let body = contents;
-
-      for (const bl of backlinks) {
-        // Try to replace all links in the body with Alchemy-formed links/buttons if possible
-        // before sending the note to be synced.
-        const linkedFile = files.find((f) => f.name === `${bl.link}.md`);
-        const replacementType =
-          this.plugin.settings.convertBacklinksToArticleTagType;
-        if (linkedFile && replacementType !== BacklinkOption.NONE) {
-          const linkedFileFrontmatter =
-            this.plugin.app.metadataCache.getFileCache(linkedFile)?.frontmatter;
-
-          if (this.canReplaceLink(linkedFileFrontmatter)) {
-            const universeId = linkedFileFrontmatter!.alchemyUniverseId!;
-            const articleId = linkedFileFrontmatter!.alchemyArticleId;
-            const replacement =
-              replacementType === BacklinkOption.BUTTON
-                ? `![${linkedFile.name}=type:article](${universeId}:${articleId})`
-                : `[${linkedFile.name}](alchemy:article:${universeId}:${articleId})`;
-
-            body = body.replaceAll(bl.original, replacement);
-          }
-        }
-      }
-
-      const frontmatter = fileCache?.frontmatter;
-
-      const { contentStart } = getFrontMatterInfo(contents);
-      body = body.slice(contentStart);
-
-      const syncableNote: SyncableNote = {
-        alchemyUniverseId: frontmatter!.alchemyUniverseId,
-        alchemyModuleId: frontmatter!.alchemyModuleId,
-        alchemyArticleId: frontmatter!.alchemyArticleId,
-        title: f.basename,
-        body,
-        onArticleCreated,
-      };
+      const syncableNote = await noteFactory.create(f, files);
       notes.push(syncableNote);
     }
     return notes;
   }
 
-  async replaceAlchemyLinks(): Promise<AlchemySyncPluginError | null> {
+  async getSyncableNote(file: TFile): Promise<SyncableNote> {
+    const noteFactory = new SyncableNoteFactory(this.plugin, this.vault);
     const files = this.markdownFiles();
+    return await noteFactory.create(file, files);
+  }
 
-    const alchemyLinkRegex = new RegExp(
-      /!?\[([^\]]*?)(?:=type:article)?\]\(((?:alchemy:article:)?([a-f0-9]+):([a-f0-9]+))\)/,
-    );
+  alchemyLinkRegex = new RegExp(
+    /!?\[([^\]]*?)(?:=type:article)?\]\(((?:alchemy:article:)?([a-f0-9]+):([a-f0-9]+))\)/,
+  );
+
+  async replaceAlchemyLinks(contents: string, files: TFile[]): Promise<string> {
+    let replaceableContents = contents;
+    const matches = this.alchemyLinkRegex.exec(replaceableContents);
+
+    if (matches !== null) {
+      // Check to see that there is an article that can be linked
+      const found = files.find((needle: TFile) => {
+        const cache = this.plugin.app.metadataCache.getFileCache(needle)!;
+        if (cache.frontmatter) {
+          return (
+            cache.frontmatter.alchemyUniverseId === matches[3] &&
+            cache.frontmatter.alchemyArticleId === matches[4]
+          );
+        }
+        return false;
+      });
+      if (found) {
+        replaceableContents = replaceableContents.replaceAll(
+          matches[0],
+          `[[${matches[1]}]]`,
+        );
+      }
+    }
+    return replaceableContents;
+  }
+
+  async replaceAlchemyLinksInFiles(): Promise<void> {
+    const files = this.markdownFiles();
 
     for (const f of files) {
       let contents = await this.vault.read(f);
-      const matches = alchemyLinkRegex.exec(contents);
-
-      if (matches !== null) {
-        // Check to see that there is an article that can be linked
-        const found = files.find((needle: TFile) => {
-          const cache = this.plugin.app.metadataCache.getFileCache(needle)!;
-          if (cache.frontmatter) {
-            return (
-              cache.frontmatter.alchemyUniverseId === matches[3] &&
-              cache.frontmatter.alchemyArticleId === matches[4]
-            );
-          }
-          return false;
-        });
-        if (found) {
-          contents = contents.replaceAll(matches[0], `[[${matches[1]}]]`);
-          await this.vault.modify(f, contents);
-        }
-      }
+      contents = await this.replaceAlchemyLinks(contents, files);
+      await this.vault.modify(f, contents);
     }
-
-    return null;
   }
 
-  private markdownFiles(): TFile[] {
+  markdownFiles(): TFile[] {
     const folder = this.plugin.settings.targetFolder;
     return this.vault
       .getMarkdownFiles()
@@ -232,17 +262,17 @@ export class NoteManager {
 
     return null;
   }
+}
 
-  canReplaceLink(frontmatter: any): boolean {
-    if (!frontmatter) {
-      return false;
-    }
-
-    return (
-      frontmatter.alchemyUniverseId !== undefined &&
-      frontmatter.alchemyUniverseId !== "" &&
-      frontmatter.alchemyArticleId !== undefined &&
-      frontmatter.alchemyArticleId !== ""
-    );
+function canReplaceLink(frontmatter: any): boolean {
+  if (!frontmatter) {
+    return false;
   }
+
+  return (
+    frontmatter.alchemyUniverseId !== undefined &&
+    frontmatter.alchemyUniverseId !== "" &&
+    frontmatter.alchemyArticleId !== undefined &&
+    frontmatter.alchemyArticleId !== ""
+  );
 }

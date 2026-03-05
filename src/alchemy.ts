@@ -14,11 +14,13 @@ export class AlchemyApiWrapper {
     this.alchemyUniverses = [];
   }
 
-  async createOrUpdateArticles(notesToSync: Array<SyncableNote>): Promise<AlchemySyncPluginError | null> {
+  async createOrUpdateArticles(
+    notesToSync: Array<SyncableNote>,
+  ): Promise<AlchemySyncPluginError | null> {
     const user = await this.loadUser();
     if (user === null) {
       return {
-        message: "Could not load Alchemy user."
+        message: "Could not load Alchemy user.",
       };
     }
 
@@ -51,13 +53,13 @@ export class AlchemyApiWrapper {
 
         if (response.ok) {
           const createArticleJson = await response.json();
-          articleId = createArticleJson.data.createOrUpdateArticle._id
+          articleId = createArticleJson.data.createOrUpdateArticle._id;
 
           const reqBody2 = {
             operationName: "AddResourceToMarketplaceItem",
             variables: {
               marketplaceItemId: note.alchemyModuleId,
-              resource: `arn:article:${articleId}`
+              resource: `arn:article:${articleId}`,
             },
             query: `
             mutation AddResourceToMarketplaceItem($marketplaceItemId: ID!, $resource: String!) {
@@ -118,31 +120,79 @@ export class AlchemyApiWrapper {
         `;
 
       return {
-        message: err
+        message: err,
       };
     }
 
     return null;
   }
 
-  async loadAlchemyUniverses(): Promise<Array<AlchemyUniverse> | AlchemySyncPluginError> {
+  async loadAlchemyUniverses(): Promise<
+    Array<AlchemyUniverse> | AlchemySyncPluginError
+  > {
     const user = await this.loadUser();
     if (user === null) {
       return {
-        message: "Could not load Alchemy user."
+        message: "Could not load Alchemy user.",
       };
     }
 
     const loadUniversesResult = await this.loadUniverses(user.id);
-    if (loadUniversesResult !== null) { return loadUniversesResult; }
+    if (loadUniversesResult !== null) {
+      return loadUniversesResult;
+    }
 
     const loadModulesResult = await this.loadEditableModules(user.id);
-    if (loadModulesResult !== null) { return loadModulesResult; }
-
+    if (loadModulesResult !== null) {
+      return loadModulesResult;
+    }
 
     const loadArticlesResult = await this.loadArticles();
-    if (loadArticlesResult !== null) { return loadArticlesResult; }
+    if (loadArticlesResult !== null) {
+      return loadArticlesResult;
+    }
     return this.alchemyUniverses;
+  }
+
+  async loadArticle(
+    articleId: string,
+  ): Promise<AlchemyArticle | AlchemySyncPluginError> {
+    const reqBody = {
+      operationName: "Article",
+      variables: {
+        _id: articleId,
+      },
+      query: `
+          query Article($_id: ID!) {
+            article(_id: $_id) {
+              _id
+              title
+              body
+            }
+          }`,
+    };
+
+    const req = this.getRequestWithHeaders(reqBody);
+    const response = await fetch(req);
+
+    if (response.ok) {
+      let articleJson;
+      try {
+        articleJson = await response.json();
+      } catch (err) {
+        console.log(err);
+        throw err;
+      }
+      return {
+        id: articleJson.data.article._id,
+        title: articleJson.data.article.title,
+        body: articleJson.data.article.body,
+      };
+    } else {
+      return {
+        message: `Failed to load article: ${articleId}`,
+      };
+    }
   }
 
   private async loadUser(): Promise<AlchemyUser | null> {
@@ -178,7 +228,9 @@ export class AlchemyApiWrapper {
     return this.user;
   }
 
-  private async loadUniverses(userId: string): Promise<AlchemySyncPluginError | null> {
+  private async loadUniverses(
+    userId: string,
+  ): Promise<AlchemySyncPluginError | null> {
     const reqBody = {
       operationName: "Universes",
       variables: {},
@@ -226,11 +278,13 @@ export class AlchemyApiWrapper {
     }
 
     return {
-      message: "Failed to load Universes"
+      message: "Failed to load Universes",
     };
   }
 
-  private async loadEditableModules(userId: string): Promise<AlchemySyncPluginError | null> {
+  private async loadEditableModules(
+    userId: string,
+  ): Promise<AlchemySyncPluginError | null> {
     const moduleLoadErrors: string[] = [];
     for (let idx = 0; idx < this.alchemyUniverses.length; idx++) {
       const universe = this.alchemyUniverses[idx]!;
@@ -297,7 +351,7 @@ export class AlchemyApiWrapper {
         `;
 
       return {
-        message: err
+        message: err,
       };
     }
 
@@ -334,36 +388,13 @@ export class AlchemyApiWrapper {
     const failedArticleIds: string[] = [];
     for (let idx = 0; idx < articles.length; idx++) {
       const article = articles[idx]!;
-      const reqBody = {
-        operationName: "Article",
-        variables: {
-          _id: article.id,
-        },
-        query: `
-          query Article($_id: ID!) {
-            article(_id: $_id) {
-              _id
-              title
-              body
-            }
-          }`,
-      };
-
-      const req = this.getRequestWithHeaders(reqBody);
-      const response = await fetch(req);
-
-      if (response.ok) {
-        let articleJson;
-        try {
-          articleJson = await response.json();
-        } catch (err) {
-          console.log(err);
-          throw err;
-        }
-        article.title = articleJson.data.article.title;
-        article.body = articleJson.data.article.body;
-      } else {
+      const loadedArticleResult = await this.loadArticle(article.id);
+      if (loadedArticleResult.hasOwnProperty("message")) {
         failedArticleIds.push(article.id);
+      } else {
+        const loadedArticle = loadedArticleResult as AlchemyArticle;
+        article.body = loadedArticle.body;
+        article.title = loadedArticle.title;
       }
     }
 
@@ -375,7 +406,7 @@ export class AlchemyApiWrapper {
       `;
 
       return {
-        message: err
+        message: err,
       };
     }
     return null;
@@ -398,5 +429,3 @@ export class AlchemyApiWrapper {
     });
   }
 }
-
-
