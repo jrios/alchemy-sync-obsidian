@@ -34,6 +34,9 @@ export class AlchemySyncer {
         const result = await this.syncVaultFromAlchemy();
         if (result !== null) {
           new Notice(result.message, result.duration);
+        } else {
+          new Notice("Notes synced from Alchemy Universes.");
+          this.plugin.updateSyncStatus(new Date());
         }
       },
     });
@@ -45,6 +48,8 @@ export class AlchemySyncer {
         const result = await this.syncVaultToAlchemy();
         if (result !== null) {
           new Notice(result.message, result.duration);
+        } else {
+          new Notice("Vault synced to Alchemy Universes");
         }
       },
     });
@@ -132,6 +137,23 @@ export class AlchemySyncer {
         return syncNotesResult;
       }
 
+      this.plugin.app.saveLocalStorage(this.plugin.storageKey,
+        {
+          universes: loadUniversesResult.map((u) => ({
+            id: u.id,
+            name: u.name,
+            modules: u.modules.map((m) => ({
+              id: m.id,
+              name: m.name,
+              articles: m.articles.map((a) => ({
+                id: a.id,
+                title: a.title,
+              }))
+            }))
+          })),
+          lastSyncedTimeStamp: new Date(),
+        },
+      );
       await this.noteManager.replaceAlchemyLinksInFiles();
       return null;
     } else {
@@ -174,7 +196,6 @@ export class AlchemySyncer {
       return articleResponse as AlchemySyncPluginError;
     }
 
-    const f = articleResponse as AlchemyArticle;
     let body = (articleResponse as AlchemyArticle).body;
 
     body = await this.noteManager.replaceAlchemyLinks(
